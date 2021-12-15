@@ -77,7 +77,33 @@ object Dag {
 
   // Q: How to prevent multiple tasks resolving the same target?
 
+  // A --> B ---> C
+  //  \------>D--/
   def runTranches(root: Task): IO[Vector[Vector[Task]]] = {
+    // 0 - verify acyclic
+    // 1. get list of remaining tasks
+    // 2. build edge sets:
+    //    Map[Task, Task]
+    //    forward:    backward:
+    //    (A, B)      (B, A)
+    //    (A, D)      (D, A)
+    //    (A, E)      (E, A)
+    //    (B, C)      (C, B)
+    //    (D, C)      (C, D)
+    //
+    // 3. Identify leaf targets
+    // 4. From leaf targets, construct backwards graph of
+    //    Dependency -> Deferred[Boolean]
+    //    Parent -------/
+    // flatmap over tasks:
+    //   task.depSignals.traverse(_.get).flatmap(_.run >> <own deferred>.complete)
+
+    // for {
+    //   _ <- run
+    //   _ <- reCheckTarget // should be complete now if we succeeded, else throw
+    //   _ <- signalConsumers
+    // } yield ()
+
     assert(root.isAcyclic)
     for {
       tState <- targetState(root)
@@ -90,6 +116,7 @@ object Dag {
 
 // A --> B ---> C
 //  \------>D--/
+//   \---> E
 // Order:
 //      /-- D -- A
 // C --> -- B --/
