@@ -12,8 +12,12 @@ case class FileTarget(path: String) extends Target {
   def isBuilt: IO[Boolean] = IO(new java.io.File(path).exists)
 }
 
+object Config {
+  val TARGET_CHECK_PARALLELISM: Int = 5
+}
 
-trait Task extends Product {
+
+trait Task {
   def target: Target
   def run: IO[Unit]
   def depends: Vector[Task]
@@ -25,35 +29,56 @@ trait Task extends Product {
     }
   }
 
-  def productArity: Int = depends.size
-  def productElement(n: Int): Task = depends(n)
+  override def equals(other: Any): Boolean = {
+    other match {
+      case t: Task => t.target.equals(target)
+      case _ => false
+    }
+  }
+
   def descTargets: Vector[Target] = depends.flatMap(_.descTargets) :+ target
+
+  def isAcyclic: Boolean = {
+    isAcyclic(Set())
+  }
+  private def isAcyclic(visited: Set[Task]): Boolean = {
+    if (visited.contains(this)) {
+      false
+    } else {
+      depends.forall(_.isAcyclic(visited + this))
+    }
+  }
+
+  def remainingTasks(targetStates: Map[Target, Boolean]): Vector[Task] = {
+    if (targetStates(target)) {
+      Vector()
+    } else {
+      Vector(this) ++ depends.flatMap(_.remainingTasks(targetStates))
+    }
+  }
+
+  def remainingTasksIO: IO[Vector[Task]] =
+    targetStates.map(s => remainingTasks(s))
+
+  def targetStates: IO[Map[Target, Boolean]] =
+    descTargets.distinct.parTraverseN(Config.TARGET_CHECK_PARALLELISM)(t => t.isBuilt.map(status => (t, status)))
+      .map(_.toMap)
+
+  def allTasks: Vector[Task] = {
+    assert(isAcyclic)
+    Vector(this) ++ depends.flatMap(_.allTasks)
+  }
 }
 
 object Dag {
-  val TARGET_CHECK_PARALLELISM: Int = 5
   def targetState(t: Task): IO[Map[Target, Boolean]] =
-    t.descTargets.distinct.parTraverseN(TARGET_CHECK_PARALLELISM)(t => t.isBuilt.map(status => (t, status)))
+    t.descTargets.distinct.parTraverseN(Config.TARGET_CHECK_PARALLELISM)(t => t.isBuilt.map(status => (t, status)))
       .map(_.toMap)
 
   // Q: How to prevent multiple tasks resolving the same target?
-  def isAcyclic(root: Task): Boolean = {
-    var visited = Set(root)
-    val queue = Queue(root)
-    var foundRepeat = false
-
-    while (queue.nonEmpty && !foundRepeat) {
-      val current = queue.dequeue()
-      if (visited.contains(current)) {
-        foundRepeat = true
-      } else {
-        queue.enqueue(current.depends:_*)
-      }
-    }
-    foundRepeat
-  }
 
   def runTranches(root: Task): IO[Vector[Vector[Task]]] = {
+    assert(root.isAcyclic)
     for {
       tState <- targetState(root)
     } yield {
