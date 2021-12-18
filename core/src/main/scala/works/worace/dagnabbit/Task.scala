@@ -29,6 +29,15 @@ trait Task {
   def target: Target
   def run: IO[Unit]
 
+  // Big problem: Can this be something like...
+  // HList[Task]...so people could match on the various subtypes to get access to their actual methods
+  // Luigi...this can be either:
+  // Task
+  // List[Task]
+  // Map[String, Task] (give names to deps)
+  // and then...you can refer to them dynamically since there's no type checking..
+  // Luigi allows things like...
+  // self.requires["dep-a"].output().path
   def depends: Vector[Task]
 
   def execute: IO[Unit] = {
@@ -96,7 +105,7 @@ case class RunnableTask(
         }
         case false => {
           for {
-            _ <- IO.println(s"Running Task to build: ${task.target}") >> IO.sleep(3.seconds)
+            _ <- IO.println(s"Running Task to build: ${task.target}")
             _ <- task.run
             _ <- IO.println(s"Finished building: ${task.target}")
             _ <- task.target.assertBuilt
@@ -168,7 +177,7 @@ object Dag {
     //   _ <- signalConsumers
     // } yield ()
 
-    assert(root.isAcyclic)
+    assert(root.isAcyclic, s"DAG starting from ${root} has cycles")
     val graph = forwardDeps(root)
     for {
       tState <- targetState(root) // todo - use this for pruning the graph
