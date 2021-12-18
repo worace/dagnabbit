@@ -2,10 +2,17 @@ package works.worace.dagnabbit
 
 import cats.effect.IO
 import cats.effect.implicits._
+import cats.implicits._
 import scala.collection.mutable.Queue
+import cats.effect.kernel.Deferred
+import scala.concurrent.duration._
 
 trait Target extends Product {
   def isBuilt: IO[Boolean]
+  def assertBuilt: IO[Unit] = isBuilt.map {
+    case true => ()
+    case false => throw new RuntimeException("Task was run but its target is still not built.")
+  }
 }
 
 case class FileTarget(path: String) extends Target {
@@ -14,12 +21,14 @@ case class FileTarget(path: String) extends Target {
 
 object Config {
   val TARGET_CHECK_PARALLELISM: Int = 5
+  val TASK_PARALLELISM: Int = 5
 }
 
 
 trait Task {
   def target: Target
   def run: IO[Unit]
+
   def depends: Vector[Task]
 
   def execute: IO[Unit] = {
@@ -70,6 +79,35 @@ trait Task {
   }
 }
 
+case class RunnableTask(
+  task: Task,
+  depSignals: Vector[Dag.DoneSignal],
+  doneSignal: Dag.DoneSignal
+) {
+  // TODO - this needs to either re-check its own target, or be pre-pruned to not include
+  // tasks that are already done
+  def run: IO[Unit] = {
+    depSignals.traverse(_.get).flatMap { _ =>
+      task.target.isBuilt.flatMap {
+        case true => doneSignal.complete(task).map { wasAbleToSet =>
+          if (!wasAbleToSet)
+            throw new RuntimeException("Logic Error - completion signal for task was already finished. This should only happen once.")
+          println(s"Target ${task.target} is already built. Skipping run.")
+        }
+        case false => {
+          for {
+            _ <- IO.println(s"Running Task to build: ${task.target}") >> IO.sleep(3.seconds)
+            _ <- task.run
+            _ <- IO.println(s"Finished building: ${task.target}")
+            _ <- task.target.assertBuilt
+            _ <- doneSignal.complete(task)
+          } yield ()
+        }
+      }
+    }
+  }
+}
+
 object Dag {
   def targetState(t: Task): IO[Map[Target, Boolean]] =
     t.descTargets.distinct.parTraverseN(Config.TARGET_CHECK_PARALLELISM)(t => t.isBuilt.map(status => (t, status)))
@@ -77,13 +115,35 @@ object Dag {
 
   // Q: How to prevent multiple tasks resolving the same target?
 
+  def forwardDeps(current: Task, graph: TaskGraph = Map()): TaskGraph = {
+    val soFar: TaskGraph = graph + (current -> current.depends)
+    current.depends.foldLeft(soFar){ case (graph, dep) => graph ++ forwardDeps(dep, graph) }
+  }
+
+  def doneSignalMap(graph: TaskGraph): IO[Map[Task, DoneSignal]] = {
+    graph.keys.toVector.traverse(task => Deferred[IO, Task].map(d => (task, d)))
+      .map(_.toMap)
+  }
+
+  def stitchGraph(graph: TaskGraph, signals: Map[Task, DoneSignal]): Vector[RunnableTask] = {
+    graph.keys.toVector.map { task =>
+      val depSignals = task.depends.map(dep => signals(dep))
+      val ownSignal = signals(task)
+      RunnableTask(task, depSignals, ownSignal)
+    }
+  }
+
+  type TaskGraph = Map[Task, Vector[Task]]
+  type DoneSignal = Deferred[IO, Task]
   // A --> B ---> C
   //  \------>D--/
-  def runTranches(root: Task): IO[Vector[Vector[Task]]] = {
+  //   \---> E
+  def runDag(root: Task): IO[Unit] = {
     // 0 - verify acyclic
     // 1. get list of remaining tasks
     // 2. build edge sets:
-    //    Map[Task, Task]
+    //    forward: Map[Task, Vector[Task]]
+    //    backward: Map[Task, Vector[Task]]
     //    forward:    backward:
     //    (A, B)      (B, A)
     //    (A, D)      (D, A)
@@ -92,11 +152,15 @@ object Dag {
     //    (D, C)      (C, D)
     //
     // 3. Identify leaf targets
+    //    - C + E
+    //    -
     // 4. From leaf targets, construct backwards graph of
     //    Dependency -> Deferred[Boolean]
     //    Parent -------/
     // flatmap over tasks:
     //   task.depSignals.traverse(_.get).flatmap(_.run >> <own deferred>.complete)
+    // Turn into flat collection of...
+    // (Task, deps (0 or more deferreds...), forward signal: 1x deferred)
 
     // for {
     //   _ <- run
@@ -105,10 +169,17 @@ object Dag {
     // } yield ()
 
     assert(root.isAcyclic)
+    val graph = forwardDeps(root)
     for {
-      tState <- targetState(root)
+      tState <- targetState(root) // todo - use this for pruning the graph
+      signals <- doneSignalMap(graph)
+      stitched = stitchGraph(graph, signals)
+      _ <- stitched.parTraverseN(Config.TASK_PARALLELISM)(_.run)
     } yield {
-      ???
+      println("*******")
+      println("tstate:")
+      println(tState)
+      println("**********")
     }
   }
 }

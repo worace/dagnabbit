@@ -22,6 +22,9 @@ case class NoOpTask(target: Target, depends: Vector[Task] = Vector()) extends Ta
 }
 
 class TaskTest extends CatsEffectSuite {
+  def randStr: String = scala.util.Random.alphanumeric.take(20).mkString
+  def tempPath: String = s"/tmp/${randStr}.txt"
+
   test("is acyclic") {
     assert(FileTask("pizza.txt").isAcyclic)
     assert(FileTask("pizza.txt", Vector(FileTask("pie.txt"))).isAcyclic)
@@ -55,5 +58,34 @@ class TaskTest extends CatsEffectSuite {
       val targets = t.map(_.target)
       assertEquals(targets, Vector(PendingTarget("a"), PendingTarget("c")))
     }
+  }
+
+  test("constructing graphs") {
+    val task = FileTask(
+      path = "/tmp/a.txt",
+      depends = Vector(
+        FileTask(
+          path = "/tmp/b.txt"
+        )
+      )
+    )
+    val exp = Map(
+      task -> Vector(FileTask("/tmp/b.txt").asInstanceOf[Task]),
+      FileTask("/tmp/b.txt").asInstanceOf[Task] -> Vector()
+    )
+    assertEquals(Dag.forwardDeps(task), exp)
+  }
+
+  test("running a dag") {
+    val task = FileTask(
+      path = "/tmp/a.txt",
+      depends = Vector(
+        FileTask(
+          path = "/tmp/b.txt"
+        )
+      )
+    )
+    println(Dag.forwardDeps(task))
+    Dag.runDag(task).assertEquals(())
   }
 }
