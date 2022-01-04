@@ -6,6 +6,7 @@ import cats.implicits._
 import scala.collection.mutable.Queue
 import cats.effect.kernel.Deferred
 import scala.concurrent.duration._
+import java.nio.file.{Path, Paths}
 
 trait Target extends Product {
   def isBuilt: IO[Boolean]
@@ -15,8 +16,11 @@ trait Target extends Product {
   }
 }
 
-case class FileTarget(path: String) extends Target {
-  def isBuilt: IO[Boolean] = IO(new java.io.File(path).exists)
+case class FileTarget(path: Path) extends Target {
+  def isBuilt: IO[Boolean] = IO(path.toFile.exists)
+}
+object FileTarget {
+  def apply(path: String): FileTarget = FileTarget(Paths.get(path))
 }
 
 object Config {
