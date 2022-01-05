@@ -21,7 +21,7 @@ lazy val commonSettings = Seq(
       url("https://worace.works")
     )
   ),
-  publishArtifact := false
+  ThisBuild / publishArtifact := false
 )
 
 Global / onChangedBuildSource := ReloadOnSourceChanges
